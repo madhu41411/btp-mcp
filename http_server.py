@@ -3,12 +3,14 @@ HTTP wrapper for BTP MCP Server with authentication and health checks.
 Provides REST endpoints for external access to MCP tools.
 """
 
+import json
 import os
-from collections import defaultdict, OrderedDict
+from collections import defaultdict
 from functools import wraps
 from flask import Flask, request, jsonify, render_template
 from datetime import datetime
 
+import anthropic
 from btp_mcp.client import SapBtpClient
 from btp_mcp.config import get_settings
 
@@ -47,10 +49,45 @@ def require_api_key(f):
     return decorated_function
 
 
-def get_all_iflows():
-    """Get deployed iflows enriched with package info."""
+def get_designtime_iflows(package_id=None):
+    """Get ALL iflows from design-time (regardless of deployment status)."""
     try:
-        # Build iflow_id -> package mapping from design-time
+        packages = client.list_integration_packages(top=200)
+        iflows = []
+        if isinstance(packages, list):
+            for pkg in packages:
+                pkg_id = pkg.get("Id")
+                pkg_name = pkg.get("Name")
+                if not pkg_id:
+                    continue
+                if package_id and pkg_id.lower() != package_id.lower():
+                    continue
+                try:
+                    arts = client._request(
+                        "GET",
+                        f"IntegrationPackages('{pkg_id}')/IntegrationDesigntimeArtifacts",
+                        params={"$top": 200},
+                    )
+                    if isinstance(arts, list):
+                        for a in arts:
+                            iflows.append({
+                                "Id": a.get("Id"),
+                                "Name": a.get("Name"),
+                                "PackageId": pkg_id,
+                                "PackageName": pkg_name,
+                                "Version": a.get("Version"),
+                                "Description": a.get("Description"),
+                            })
+                except Exception:
+                    pass
+        return iflows
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_deployed_iflows():
+    """Get only currently deployed iflows from runtime, enriched with package info."""
+    try:
         pkg_map = {}
         packages = client.list_integration_packages(top=200)
         if isinstance(packages, list):
@@ -71,7 +108,6 @@ def get_all_iflows():
                 except Exception:
                     pass
 
-        # Get runtime status
         runtime = client._request("GET", "IntegrationRuntimeArtifacts", params={"$top": 200})
         if not isinstance(runtime, list):
             runtime = [runtime]
@@ -151,86 +187,224 @@ def get_iflow_stats(iflow_id=None):
         return {"error": str(e)}
 
 
-def process_query(user_query):
-    """Convert a user query into a response payload."""
-    query_lower = user_query.lower()
-    response = {"type": "text", "data": None}
-    try:
-        if any(keyword in query_lower for keyword in ["error", "failed", "failure", "issues"]):
-            stats = get_iflow_stats()
-            errors = stats.get("errors", [])
-            failed_count = stats.get("by_status", {}).get("FAILED", 0) + stats.get("by_status", {}).get("ERROR", 0)
-            response["type"] = "errors"
-            response["data"] = {"failed_count": failed_count, "errors": errors, "by_status": dict(stats.get("by_status", {}))}
-            response["summary"] = f"Found {failed_count} failed/error messages"
-        elif any(keyword in query_lower for keyword in ["package", "packages"]):
-            iflows = get_all_iflows()
-            packages = defaultdict(list)
-            if isinstance(iflows, dict) and "error" in iflows:
-                response["type"] = "error"
-                response["data"] = iflows
-                response["summary"] = f"Error: {iflows['error']}"
-            else:
-                for iflow in iflows:
-                    pkg_id = iflow.get("PackageId", "Unknown")
-                    packages[pkg_id].append(iflow)
-                response["type"] = "packages"
-                response["data"] = dict(packages)
-                response["summary"] = f"Found {len(packages)} packages"
-        elif any(keyword in query_lower for keyword in ["statistics", "stats", "summary", "count", "how many"]):
-            stats = get_iflow_stats()
-            response["type"] = "statistics"
-            response["data"] = stats
-            response["summary"] = f"Total messages: {stats.get('total_messages', 0)}, Status breakdown: {dict(stats.get('by_status', {}))}"
-        elif any(keyword in query_lower for keyword in ["deployment", "deploy", "status"]):
-            iflows = get_all_iflows()
-            if isinstance(iflows, dict) and "error" in iflows:
-                response["type"] = "error"
-                response["data"] = iflows
-                response["summary"] = f"Error: {iflows['error']}"
-            else:
-                response["type"] = "deployment"
-                response["data"] = iflows
-                response["summary"] = f"{len(iflows)} iflows deployed and active"
-        elif any(keyword in query_lower for keyword in ["list", "show", "all", "iflows", "flows"]):
-            iflows = get_all_iflows()
-            if isinstance(iflows, dict) and "error" in iflows:
-                response["type"] = "error"
-                response["data"] = iflows
-                response["summary"] = f"Error: {iflows['error']}"
-            else:
-                response["type"] = "iflows_list"
-                response["data"] = iflows
-                response["summary"] = f"Found {len(iflows)} active iflows"
-        elif "iflow" in query_lower or "flow" in query_lower:
-            iflows = get_all_iflows()
-            if isinstance(iflows, dict) and "error" in iflows:
-                response["type"] = "error"
-                response["data"] = iflows
-                response["summary"] = f"Error: {iflows['error']}"
-            else:
-                keywords = query_lower.split()
-                matching = [i for i in iflows if any(k in (i.get("Name", "") or "").lower() or k in (i.get("Id", "") or "").lower() for k in keywords)]
-                response["type"] = "iflows_list"
-                response["data"] = matching
-                response["summary"] = f"Found {len(matching)} matching iflows"
-        else:
-            response["type"] = "help"
-            response["data"] = {
-                "suggestions": [
-                    "List all iflows",
-                    "Show statistics",
-                    "List packages",
-                    "Check deployment status",
-                    "Show errors",
-                    "Search for specific iflow"
-                ]
-            }
-            response["summary"] = "I can help you with iflow information. Try asking about: iflows, statistics, packages, deployment status, or errors."
+BTP_TOOLS = [
+    {
+        "name": "list_all_iflows",
+        "description": (
+            "List all integration flows (iflows) from design-time. "
+            "Returns iflows from ALL packages regardless of deployment status. "
+            "Optionally filter by package_id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "package_id": {
+                    "type": "string",
+                    "description": "Optional package ID to filter iflows by package.",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_deployed_iflows",
+        "description": (
+            "List only the iflows that are currently deployed and running in the SAP BTP runtime. "
+            "Use this when the user asks which iflows are deployed, active, or running."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "list_packages",
+        "description": "List all integration packages in the SAP BTP Integration Suite tenant.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_message_stats",
+        "description": (
+            "Get message processing statistics and logs. Returns total message count, "
+            "status breakdown (COMPLETED, FAILED, ERROR), per-iflow counts, and recent messages. "
+            "Use for questions about statistics, message counts, or recent activity."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_errors",
+        "description": (
+            "Get failed and errored messages. Returns count and details of FAILED/ERROR messages. "
+            "Use when user asks about errors, failures, or issues."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "deploy_iflow",
+        "description": (
+            "Deploy a design-time integration flow to the SAP BTP runtime. "
+            "The artifact_id is the iflow's unique Id (not the display name). "
+            "Call list_all_iflows first to get the correct Id if you only have a name."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "artifact_id": {
+                    "type": "string",
+                    "description": "The unique iflow Id to deploy.",
+                }
+            },
+            "required": ["artifact_id"],
+        },
+    },
+    {
+        "name": "undeploy_iflow",
+        "description": (
+            "Undeploy (stop and remove) a currently deployed integration flow from the SAP BTP runtime. "
+            "The artifact_id is the iflow's unique Id. "
+            "Call get_deployed_iflows first to confirm it is deployed and get the correct Id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "artifact_id": {
+                    "type": "string",
+                    "description": "The unique iflow Id to undeploy.",
+                }
+            },
+            "required": ["artifact_id"],
+        },
+    },
+]
 
-        return response
-    except Exception as e:
-        return {"type": "error", "data": {"error": str(e)}, "summary": f"Error processing query: {str(e)}"}
+_anthropic_client = None
+
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    return _anthropic_client
+
+
+def _execute_tool(tool_name: str, tool_input: dict) -> dict:
+    if tool_name == "list_all_iflows":
+        data = get_designtime_iflows(package_id=tool_input.get("package_id"))
+        if isinstance(data, dict) and "error" in data:
+            return {"error": data["error"]}
+        return {"type": "iflows_list", "data": data, "count": len(data)}
+
+    if tool_name == "get_deployed_iflows":
+        data = get_deployed_iflows()
+        if isinstance(data, dict) and "error" in data:
+            return {"error": data["error"]}
+        return {"type": "deployment", "data": data, "count": len(data)}
+
+    if tool_name == "list_packages":
+        iflows = get_designtime_iflows()
+        if isinstance(iflows, dict) and "error" in iflows:
+            return {"error": iflows["error"]}
+        packages = defaultdict(list)
+        for iflow in iflows:
+            packages[iflow.get("PackageId", "Unknown")].append(iflow)
+        return {"type": "packages", "data": dict(packages), "count": len(packages)}
+
+    if tool_name == "get_message_stats":
+        stats = get_iflow_stats()
+        if isinstance(stats, dict) and "error" in stats:
+            return {"error": stats["error"]}
+        return {
+            "type": "statistics",
+            "data": stats,
+            "total_messages": stats.get("total_messages", 0),
+            "by_status": dict(stats.get("by_status", {})),
+        }
+
+    if tool_name == "get_errors":
+        stats = get_iflow_stats()
+        if isinstance(stats, dict) and "error" in stats:
+            return {"error": stats["error"]}
+        errors = stats.get("errors", [])
+        failed_count = (
+            stats.get("by_status", {}).get("FAILED", 0)
+            + stats.get("by_status", {}).get("ERROR", 0)
+        )
+        return {
+            "type": "errors",
+            "data": {
+                "failed_count": failed_count,
+                "errors": errors,
+                "by_status": dict(stats.get("by_status", {})),
+            },
+        }
+
+    if tool_name == "deploy_iflow":
+        artifact_id = tool_input["artifact_id"]
+        try:
+            task_id = client.deploy_artifact(artifact_id)
+            return {"success": True, "message": f"Deployment of '{artifact_id}' started.", "task_id": task_id}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    if tool_name == "undeploy_iflow":
+        artifact_id = tool_input["artifact_id"]
+        try:
+            client.undeploy_artifact(artifact_id)
+            return {"success": True, "message": f"'{artifact_id}' undeployed successfully."}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    return {"error": f"Unknown tool: {tool_name}"}
+
+
+def process_query(user_query: str) -> dict:
+    """Run user query through Claude with BTP tools and return a structured response."""
+    ac = _get_anthropic_client()
+    messages = [{"role": "user", "content": user_query}]
+    system_prompt = (
+        "You are an assistant for SAP BTP Integration Suite. "
+        "You have tools to list iflows, check deployment status, deploy/undeploy iflows, "
+        "and retrieve message processing statistics and errors. "
+        "Always call the appropriate tool to get live data before answering. "
+        "When reporting iflow lists or deployment data, include the iflow Id, Name, and PackageName. "
+        "Be concise and factual."
+    )
+
+    last_tool_result = None
+
+    while True:
+        response = ac.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=2048,
+            system=system_prompt,
+            tools=BTP_TOOLS,
+            messages=messages,
+        )
+
+        if response.stop_reason == "tool_use":
+            tool_uses = [b for b in response.content if b.type == "tool_use"]
+            messages.append({"role": "assistant", "content": response.content})
+
+            tool_results = []
+            for tu in tool_uses:
+                result = _execute_tool(tu.name, tu.input)
+                last_tool_result = result
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": json.dumps(result),
+                })
+            messages.append({"role": "user", "content": tool_results})
+
+        else:
+            text = next(
+                (b.text for b in response.content if hasattr(b, "text")), ""
+            )
+            result_type = "text"
+            result_data = None
+            if last_tool_result:
+                result_type = last_tool_result.get("type", "text")
+                result_data = last_tool_result.get("data")
+            return {"type": result_type, "data": result_data, "summary": text}
+
+    # unreachable — loop always exits via the else branch above
 
 
 @app.route('/', methods=['GET'])
@@ -355,9 +529,22 @@ def get_logs():
 @app.route('/api/iflows', methods=['GET'])
 @require_api_key
 def list_iflows_api():
-    """List active iflows from recent runtime logs."""
+    """List all design-time iflows, optionally filtered by package_id."""
     try:
-        iflows = get_all_iflows()
+        package_id = request.args.get('package_id', None, type=str)
+        iflows = get_designtime_iflows(package_id=package_id)
+        if isinstance(iflows, dict) and "error" in iflows:
+            return jsonify({"success": False, "error": iflows["error"]}), 500
+        return jsonify({"success": True, "data": iflows, "count": len(iflows)}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/deployed', methods=['GET'])
+@require_api_key
+def list_deployed_api():
+    """List only currently deployed (runtime) iflows."""
+    try:
+        iflows = get_deployed_iflows()
         if isinstance(iflows, dict) and "error" in iflows:
             return jsonify({"success": False, "error": iflows["error"]}), 500
         return jsonify({"success": True, "data": iflows, "count": len(iflows)}), 200
@@ -385,6 +572,26 @@ def errors_api():
         stats = get_iflow_stats()
         errors = stats.get("errors", []) if isinstance(stats, dict) else []
         return jsonify({"success": True, "data": {"failed_count": stats.get("by_status", {}).get("FAILED", 0) + stats.get("by_status", {}).get("ERROR", 0), "errors": errors, "by_status": dict(stats.get("by_status", {}))}}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/deploy/<artifact_id>', methods=['POST'])
+@require_api_key
+def deploy_artifact(artifact_id):
+    """Deploy a design-time integration artifact."""
+    try:
+        task_id = client.deploy_artifact(artifact_id)
+        return jsonify({"success": True, "message": f"'{artifact_id}' deployment started.", "task_id": task_id}), 202
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/undeploy/<artifact_id>', methods=['DELETE'])
+@require_api_key
+def undeploy_artifact(artifact_id):
+    """Undeploy a runtime integration artifact."""
+    try:
+        client.undeploy_artifact(artifact_id)
+        return jsonify({"success": True, "message": f"'{artifact_id}' undeployed successfully"}), 200
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
