@@ -31,7 +31,7 @@ services:
     plan: free
     region: oregon
     dockerfilePath: ./Dockerfile
-    dockerCommand: sh -c "python -m btp_mcp.server --transport sse --host 0.0.0.0 --port ${PORT:-8000}"
+    dockerCommand: python mcp_sse_server.py
     port: 8000
     healthCheckPath: /health
     envVars:

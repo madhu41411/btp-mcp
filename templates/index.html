@@ -312,10 +312,10 @@
                     <div>👋 Hello! I'm your BTP Integration Suite assistant.</div>
                     <div style="margin-top: 10px; font-size: 13px; color: #9ca3af;">I can help you with:</div>
                     <div class="suggestions" style="margin-top: 10px;">
-                        <div class="suggestion" onclick="sendMessage('List all iflows')">List iflows</div>
-                        <div class="suggestion" onclick="sendMessage('Show statistics')">Show stats</div>
-                        <div class="suggestion" onclick="sendMessage('List packages')">List packages</div>
-                        <div class="suggestion" onclick="sendMessage('Show errors')">Show errors</div>
+                        <div class="suggestion" onclick="quickAction('iflows')">List iflows</div>
+                        <div class="suggestion" onclick="quickAction('stats')">Show stats</div>
+                        <div class="suggestion" onclick="quickAction('packages')">List packages</div>
+                        <div class="suggestion" onclick="quickAction('errors')">Show errors</div>
                     </div>
                 </div>
             </div>
@@ -461,6 +461,64 @@
             }
         }
 
+        const QUICK_ACTIONS = {
+            iflows:   { label: 'List all iflows',  url: '/api/iflows',   type: 'iflows_list',  dataKey: 'data' },
+            stats:    { label: 'Show statistics',  url: '/api/stats',    type: 'statistics',   dataKey: 'data' },
+            packages: { label: 'List packages',    url: '/api/packages', type: 'packages_raw', dataKey: 'data' },
+            errors:   { label: 'Show errors',      url: '/api/errors',   type: 'errors',       dataKey: 'data' },
+        };
+
+        async function quickAction(key) {
+            const action = QUICK_ACTIONS[key];
+            addMessage(action.label, true);
+
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'loading';
+            loadingDiv.innerHTML = '<span></span><span></span><span></span>';
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.appendChild(loadingDiv);
+            messageDiv.appendChild(contentDiv);
+            chatArea.appendChild(messageDiv);
+            chatArea.scrollTop = chatArea.scrollHeight;
+
+            try {
+                const response = await fetch(action.url);
+                const result = await response.json();
+                messageDiv.remove();
+
+                if (!result.success) {
+                    addMessage('❌ ' + (result.error || 'Request failed'), false);
+                    return;
+                }
+
+                let fakeResponse = { type: action.type, data: result[action.dataKey] };
+
+                if (key === 'iflows') {
+                    fakeResponse.summary = `Found ${result.count} iflow(s)`;
+                } else if (key === 'stats') {
+                    const s = result.data || {};
+                    fakeResponse.summary = `Total messages: ${s.total_messages || 0}`;
+                } else if (key === 'packages') {
+                    fakeResponse = { type: 'packages', data: {}, summary: '' };
+                    const pkgs = result.data || [];
+                    const grouped = {};
+                    pkgs.forEach(p => { grouped[p.Id] = [{ PackageName: p.Name, Id: p.Id }]; });
+                    fakeResponse.data = grouped;
+                    fakeResponse.summary = `Found ${pkgs.length} package(s)`;
+                } else if (key === 'errors') {
+                    fakeResponse.summary = `Found ${(result.data || {}).failed_count || 0} failed/error message(s)`;
+                }
+
+                addMessage(fakeResponse.summary, false, fakeResponse);
+            } catch (err) {
+                messageDiv.remove();
+                addMessage('❌ Error: ' + err.message, false);
+            }
+        }
+
         async function sendMessage(text) {
             if (!text.trim()) return;
 
@@ -498,10 +556,9 @@
 
                 if (result.response) {
                     const summary = result.response.summary || 'Done';
-                    console.log('Summary:', summary);
-                    console.log('Response data:', result.response.data);
-                    console.log('Response type:', result.response.type);
                     addMessage(summary, false, result.response);
+                } else if (result.error) {
+                    addMessage('❌ ' + result.error, false);
                 } else {
                     addMessage('Sorry, I encountered an error processing your request.', false);
                 }
