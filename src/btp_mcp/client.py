@@ -20,6 +20,34 @@ def _unwrap_odata(payload: Dict[str, Any]) -> Any:
     return data
 
 
+def _build_http_error_message(
+    response: httpx.Response,
+    *,
+    base_url: str,
+    resource_path: str,
+) -> str:
+    body = response.text.strip()
+
+    if response.status_code == 404 and "Requested route" in body:
+        return (
+            "SAP BTP base URL does not expose the Integration Suite OData API. "
+            f"Configured base URL: {base_url}. Requested resource: {resource_path}. "
+            "This usually means the service key's runtime URL was used instead of the "
+            "Cloud Integration tenant API host."
+        )
+
+    if response.status_code in (401, 403):
+        return (
+            "SAP BTP request was rejected. Verify the client credentials and ensure the "
+            "service key or API client has permissions for the requested Integration Suite API."
+        )
+
+    return (
+        f"SAP BTP request failed with HTTP {response.status_code} for resource "
+        f"{resource_path}: {body[:300]}"
+    )
+
+
 @dataclass
 class SapBtpClient:
     settings: Settings
@@ -67,7 +95,16 @@ class SapBtpClient:
             },
             timeout=self.settings.sap_btp_timeout_seconds,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ValueError(
+                _build_http_error_message(
+                    exc.response,
+                    base_url=self.base_url,
+                    resource_path=resource_path,
+                )
+            ) from exc
         return _unwrap_odata(response.json())
 
     def ping(self) -> Dict[str, Any]:

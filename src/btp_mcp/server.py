@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from btp_mcp.client import SapBtpClient
 from btp_mcp.config import get_settings

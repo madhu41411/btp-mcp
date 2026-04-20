@@ -7,10 +7,10 @@ name = "btp-mcp"
 version = "0.1.0"
 description = "Python MCP server for SAP BTP Integration Suite"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
   "httpx>=0.27.0",
-  "mcp>=1.9.0",
+  "fastmcp>=3.0.0",
   "pydantic>=2.7.0",
   "pydantic-settings>=2.2.1",
 ]
