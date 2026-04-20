@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -51,6 +52,7 @@ def _build_http_error_message(
 @dataclass
 class SapBtpClient:
     settings: Settings
+    _token_cache: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         self.base_url = _strip_trailing_slash(self.settings.sap_btp_base_url)
@@ -59,6 +61,9 @@ class SapBtpClient:
             self.api_path = f"/{self.api_path}"
 
     def _get_token(self) -> str:
+        now = time.time()
+        if self._token_cache.get("token") and now < self._token_cache.get("expires_at", 0):
+            return self._token_cache["token"]
         response = httpx.post(
             self.settings.sap_btp_token_url,
             data={"grant_type": "client_credentials"},
@@ -70,6 +75,8 @@ class SapBtpClient:
         token = payload.get("access_token")
         if not token:
             raise ValueError("SAP OAuth token response did not include access_token")
+        expires_in = payload.get("expires_in", 3600)
+        self._token_cache = {"token": token, "expires_at": now + expires_in - 60}
         return token
 
     def _request(
@@ -266,3 +273,35 @@ class SapBtpClient:
             f"('{quote(message_guid, safe='')}')/CustomHeaderProperties"
         )
         return self._request("GET", resource)
+
+    def deploy_artifact(self, artifact_id: str, version: str = "active") -> str:
+        """Deploy a design-time integration artifact. Returns the task ID."""
+        token = self._get_token()
+        url = f"{self.base_url}{self.api_path}/DeployIntegrationDesigntimeArtifact"
+        response = httpx.post(
+            url,
+            params={"Id": f"'{quote(artifact_id, safe='')}'", "Version": f"'{version}'"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=self.settings.sap_btp_timeout_seconds,
+        )
+        if response.status_code in (200, 202):
+            return response.text.strip()
+        raise ValueError(
+            _build_http_error_message(response, base_url=self.base_url, resource_path=url)
+        )
+
+    def undeploy_artifact(self, artifact_id: str) -> bool:
+        """Undeploy a runtime integration artifact by ID."""
+        token = self._get_token()
+        url = f"{self.base_url}{self.api_path}/IntegrationRuntimeArtifacts('{quote(artifact_id, safe='')}')"
+        response = httpx.request(
+            "DELETE",
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=self.settings.sap_btp_timeout_seconds,
+        )
+        if response.status_code in (200, 202, 204):
+            return True
+        raise ValueError(
+            _build_http_error_message(response, base_url=self.base_url, resource_path=url)
+        )
