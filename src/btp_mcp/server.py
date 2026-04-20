@@ -23,12 +23,44 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     def list_artifacts(
-        top: int = 50,
-        skip: int = 0,
         package_id: str | None = None,
     ) -> list[dict]:
-        """List designtime artifacts, optionally filtered by package id."""
-        return client.list_artifacts(top=top, skip=skip, package_id=package_id)
+        """
+        List all design-time integration flows (iflows) from SAP BTP Integration Suite.
+        Iterates through all packages and fetches artifacts from each.
+        Optionally filter by a specific package_id.
+        Returns iflow Id, Name, PackageId, PackageName, Version, Description.
+        """
+        packages = client.list_integration_packages(top=200)
+        iflows = []
+        if not isinstance(packages, list):
+            return iflows
+        for pkg in packages:
+            pkg_id = pkg.get("Id")
+            pkg_name = pkg.get("Name")
+            if not pkg_id:
+                continue
+            if package_id and pkg_id.lower() != package_id.lower():
+                continue
+            try:
+                arts = client._request(
+                    "GET",
+                    f"IntegrationPackages('{pkg_id}')/IntegrationDesigntimeArtifacts",
+                    params={"$top": 200},
+                )
+                if isinstance(arts, list):
+                    for a in arts:
+                        iflows.append({
+                            "Id": a.get("Id"),
+                            "Name": a.get("Name"),
+                            "PackageId": pkg_id,
+                            "PackageName": pkg_name,
+                            "Version": a.get("Version"),
+                            "Description": a.get("Description"),
+                        })
+            except Exception:
+                pass
+        return iflows
 
     @mcp.tool()
     def get_artifact_details(artifact_id: str, version: str = "active") -> dict:
