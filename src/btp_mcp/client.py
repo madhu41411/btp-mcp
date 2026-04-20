@@ -117,6 +117,26 @@ class SapBtpClient:
         }
 
     def list_integration_packages(self, top: int = 25, skip: int = 0) -> Any:
+        """List all integration packages.
+        
+        Returns package details including:
+        - Id: Unique package identifier
+        - Name: Display name of the package
+        - Description: Package description
+        - CreatedDate: When the package was created
+        - ModifiedDate: Last modification timestamp
+        - Vendor: Package vendor/creator
+        
+        Args:
+            top: Maximum number of packages to return (default 25)
+            skip: Number of packages to skip for pagination
+            
+        Returns:
+            List of package objects with metadata and configuration details.
+            
+        Note:
+            Requires design-time API permissions (IntegrationPackages read access).
+        """
         return self._request(
             "GET",
             "IntegrationPackages",
@@ -129,6 +149,33 @@ class SapBtpClient:
         skip: int = 0,
         package_id: Optional[str] = None,
     ) -> Any:
+        """List integration artifacts (iflows, mappings, scripts, etc.).
+        
+        Returns artifact details including:
+        - Id: Unique artifact identifier (iflow ID)
+        - Name: Display name of the integration flow
+        - ArtifactType: Type of artifact (IntegrationFlow, MessageMapping, Script, etc.)
+        - PackageId: ID of the package containing this artifact
+        - PackageName: Name of the containing package
+        - Description: Artifact description
+        - CreatedDate: Creation timestamp
+        - ModifiedDate: Last modification timestamp
+        - Version: Current version of the artifact
+        - DeployedVersion: Version currently deployed (if deployed)
+        - Status: Current deployment status (Active, InActive, Draft)
+        - RuntimeStatus: Whether the artifact is active in runtime
+        
+        Args:
+            top: Maximum number of artifacts to return (default 50)
+            skip: Number of artifacts to skip for pagination
+            package_id: Optional filter to get artifacts from specific package
+            
+        Returns:
+            List of artifact objects with design-time metadata and configuration.
+            
+        Note:
+            Requires design-time API permissions (IntegrationDesigntimeArtifacts read access).
+        """
         params: Dict[str, Any] = {"$top": top, "$skip": skip}
         if package_id:
             params["$filter"] = f"PackageId eq '{package_id}'"
@@ -149,6 +196,41 @@ class SapBtpClient:
         top: int = 100,
         skip: int = 0,
     ) -> Any:
+        """Get message processing logs for executed integration flows.
+        
+        Each log entry contains runtime information including:
+        - MessageGuid: Unique identifier for the processed message
+        - LogStart: When processing started (ISO-like timestamp)
+        - LogEnd: When processing ended
+        - Status: Processing status (COMPLETED, FAILED, ERROR, DISCARDED, RETRY_EXHAUSTED)
+        - DurationInMs: How long processing took
+        - IntegrationArtifact: Nested object with iflow details:
+          * Id: Integration flow unique identifier
+          * Name: Integration flow display name
+          * Type: Always "INTEGRATION_FLOW" for iflows
+          * PackageId: ID of the package containing this iflow
+          * PackageName: Name of the package
+        - ErrorInformation: Details if status is FAILED or ERROR
+        - CustomHeaderProperties: Custom headers from the message
+        - Receiver: Target system name
+        - Sender: Source system name
+        
+        Args:
+            status: Filter by message status (COMPLETED, FAILED, ERROR, DISCARDED, etc.)
+            started_after: Filter messages processed after this timestamp (ISO format)
+            ended_before: Filter messages processed before this timestamp
+            top: Maximum number of logs to return (default 100, max 2000)
+            skip: Number of logs to skip for pagination
+            
+        Returns:
+            List of message processing log entries with runtime execution data.
+            Each entry includes embedded IntegrationArtifact with iflow and package info.
+            
+        Note:
+            - Requires runtime monitoring API permissions (MessageProcessingLogs read access)
+            - This is the primary method to discover active iflows with recent message activity
+            - Only iflows that have processed messages appear in these logs
+        """
         filters = []
         if status:
             filters.append(f"Status eq '{status.upper()}'")
@@ -164,6 +246,21 @@ class SapBtpClient:
         return self._request("GET", "MessageProcessingLogs", params=params)
 
     def get_custom_header_properties(self, message_guid: str) -> Any:
+        """Get custom header properties for a specific processed message.
+        
+        Retrieves custom headers and properties associated with a message
+        processing log entry, useful for understanding message metadata
+        and flow-specific properties.
+        
+        Args:
+            message_guid: The MessageGuid from a message processing log entry
+            
+        Returns:
+            Dictionary containing custom header properties for the message.
+            
+        Note:
+            Requires runtime monitoring API permissions.
+        """
         resource = (
             "MessageProcessingLogs"
             f"('{quote(message_guid, safe='')}')/CustomHeaderProperties"

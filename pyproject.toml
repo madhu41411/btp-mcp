@@ -13,6 +13,7 @@ dependencies = [
   "fastmcp>=3.0.0",
   "pydantic>=2.7.0",
   "pydantic-settings>=2.2.1",
+  "flask>=2.3.0",
 ]
 
 [project.optional-dependencies]

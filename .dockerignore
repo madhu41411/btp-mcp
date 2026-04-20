@@ -1,0 +1,42 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+LICENSE
+
+# Development
+.env.example
+.env.local
+
+# Tests
+tests/
+.github/
+
+# Build artifacts
+*.tar.gz
+*.zip
