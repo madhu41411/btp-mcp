@@ -22,3 +22,28 @@ services:
         value: "30"
       - key: API_KEY
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  - type: web
+    name: btp-mcp-sse
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerCommand: sh -c "python -m btp_mcp.server --transport sse --host 0.0.0.0 --port ${PORT:-8000}"
+    port: 8000
+    healthCheckPath: /health
+    envVars:
+      - key: SAP_BTP_BASE_URL
+        sync: false
+      - key: SAP_BTP_TOKEN_URL
+        sync: false
+      - key: SAP_BTP_CLIENT_ID
+        sync: false
+      - key: SAP_BTP_CLIENT_SECRET
+        sync: false
+      - key: SAP_BTP_API_PATH
+        value: /api/v1
+      - key: SAP_BTP_TIMEOUT_SECONDS
+        value: "30"

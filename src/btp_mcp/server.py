@@ -109,6 +109,21 @@ def main() -> None:
     server = build_server()
     if args.transport == "stdio":
         server.run(transport="stdio")
+    elif args.transport == "sse":
+        from starlette.applications import Starlette
+        from starlette.responses import JSONResponse
+        from starlette.routing import Mount, Route
+        import uvicorn
+
+        async def health(request):
+            return JSONResponse({"status": "ok"})
+
+        mcp_app = server.http_app(transport="sse")
+        app = Starlette(routes=[
+            Route("/health", health),
+            Mount("/", app=mcp_app),
+        ])
+        uvicorn.run(app, host=args.host, port=args.port)
     else:
         server.run(transport=args.transport, host=args.host, port=args.port)
 
