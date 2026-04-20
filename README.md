@@ -1,82 +1,109 @@
 # SAP BTP Integration Suite MCP Server
 
-This project provides a Python-based MCP server that connects to SAP BTP Integration Suite over the Cloud Integration OData API.
+A tidy Python MCP server for SAP BTP Integration Suite that includes:
+- a public HTTP API,
+- a web UI at `/`,
+- and a CLI helper for listing active integration flows.
 
-## Features
+## What this repository contains
 
-- OAuth2 client-credentials authentication
-- MCP tools for connection checks, package discovery, artifact inspection, and message processing logs
-- Simple project layout for continuing development in VS Code
+- `http_server.py` — Flask HTTP server with UI and authenticated REST endpoints.
+- `src/btp_mcp/client.py` — SAP BTP Integration Suite client.
+- `src/btp_mcp/config.py` — environment-backed settings.
+- `src/btp_mcp/server.py` — MCP server entrypoint for `btp-mcp` command and `python -m btp_mcp.server`.
+- `list_iflows.py` — helper script to extract active iflows from runtime message logs.
+- `templates/index.html` — browser interface for asking iflow questions.
+- `Dockerfile`, `render.yaml` — deployment configuration for Render.
 
-## Implemented MCP Tools
+## Requirements
 
-- `ping_sap_btp`: Verifies the tenant is reachable and returns a small sample of packages.
-- `list_integration_packages`: Lists integration packages from SAP Integration Suite.
-- `list_artifacts`: Lists designtime artifacts, optionally filtered by package id.
-- `get_artifact_details`: Reads a single integration artifact by id and version.
-- `get_message_processing_logs`: Reads message processing logs with optional status and time filters.
-- `get_custom_header_properties`: Reads custom header properties for a message processing log entry.
+- Python 3.10+
+- `pip install -e .`
+- SAP BTP Integration Suite credentials with access to runtime `MessageProcessingLogs`
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set the values from your SAP BTP service key or API client configuration.
-
-If your SAP BTP credentials come in the common JSON structure below, map them like this:
-
-- `oauth.url` -> `SAP_BTP_BASE_URL`
-- `oauth.tokenurl` -> `SAP_BTP_TOKEN_URL`
-- `oauth.clientid` -> `SAP_BTP_CLIENT_ID`
-- `oauth.clientsecret` -> `SAP_BTP_CLIENT_SECRET`
-
-Some SAP service keys expose a runtime URL under `oauth.url` that can mint tokens but does not host the Cloud Integration OData API. If you see a `404 Not Found` mentioning `Requested route`, use the actual Integration Suite tenant API host for `SAP_BTP_BASE_URL` instead of the runtime route.
-
-Required environment variables:
+Copy `.env.example` to `.env` and set values:
 
 - `SAP_BTP_BASE_URL`
 - `SAP_BTP_TOKEN_URL`
 - `SAP_BTP_CLIENT_ID`
 - `SAP_BTP_CLIENT_SECRET`
+- Optional: `SAP_BTP_API_PATH` (defaults to `/api/v1`)
+- Optional: `SAP_BTP_TIMEOUT_SECONDS` (defaults to `30`)
+- Optional: `API_KEY` for securing `/api/*` endpoints.
 
-Optional:
+> Use the Integration Suite tenant API host for `SAP_BTP_BASE_URL`. If you receive a 404 mentioning `Requested route`, the runtime service URL is likely incorrect.
 
-- `SAP_BTP_API_PATH` defaults to `/api/v1`
-- `SAP_BTP_TIMEOUT_SECONDS` defaults to `30`
-
-## Run In VS Code
+## Run the HTTP server locally
 
 ```bash
-python3.10 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install ".[dev]"
+pip install -e .
 cp .env.example .env
+python http_server.py
+```
+
+Then open:
+
+```bash
+http://localhost:8000/
+```
+
+## Available endpoints
+
+- `GET /` — web UI homepage
+- `GET /health` — health check
+- `GET /api/ping` — BTP connectivity check
+- `GET /api/packages` — list integration packages
+- `GET /api/artifacts` — list artifacts
+- `GET /api/logs` — message processing logs
+- `POST /api/chat` — natural language query from UI
+
+## Securing the API
+
+If `API_KEY` is set, API routes require the HTTP header:
+
+```bash
+X-API-Key: <your-api-key>
+```
+
+The `/health` endpoint remains public.
+
+## CLI helper
+
+To list active iflows from recent runtime logs:
+
+```bash
+python list_iflows.py
+```
+
+## MCP server
+
+Use the built-in MCP entrypoint when you need an MCP-compatible command:
+
+```bash
+python -m btp_mcp.server --transport stdio
+```
+
+or with the installed script:
+
+```bash
 btp-mcp
 ```
 
-You can also run:
+## Docker and Render deployment
 
-```bash
-python -m btp_mcp.server
-```
+Render is configured to run `http_server.py` on port `8000`.
 
-## MCP Client Example
+The `render.yaml` and `Dockerfile` are ready for deployment.
 
-Add the server to an MCP-capable client with a command similar to:
+## Clean workspace
 
-```json
-{
-  "mcpServers": {
-    "sap-btp": {
-      "command": "/absolute/path/to/btp-mcp/.venv/bin/python",
-      "args": ["-m", "btp_mcp.server"],
-      "cwd": "/absolute/path/to/btp-mcp"
-    }
-  }
-}
-```
+This repository has been tidied by removing old duplicate launch scripts, generated files, and stale documentation.
 
 ## Notes
 
-- SAP Cloud Integration OData APIs are exposed under `https://<host>/api/v1/...`
-- For modifying requests, SAP requires a CSRF token. This starter currently focuses on read-oriented tools so it is safe to extend incrementally.
-- JSON responses are requested with `$format=json` for easier MCP tool output handling.
-- Use Python 3.10 or newer. Recent MCP server libraries no longer support Python 3.9.
+- Runtime logs only show iflows with recent activity. Full design-time artifact listing may require broader Integration Suite permissions.
+- This project is intentionally focused on read-only discovery and monitoring.

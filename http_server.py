@@ -4,7 +4,6 @@ Provides REST endpoints for external access to MCP tools.
 """
 
 import os
-import json
 from collections import defaultdict, OrderedDict
 from functools import wraps
 from flask import Flask, request, jsonify, render_template
