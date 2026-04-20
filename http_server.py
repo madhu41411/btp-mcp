@@ -48,23 +48,50 @@ def require_api_key(f):
 
 
 def get_all_iflows():
-    """Get all active integration flows from runtime message logs."""
+    """Get deployed iflows enriched with package info."""
     try:
-        logs = client.get_message_processing_logs(top=2000)
-        iflows_dict = OrderedDict()
-        for log in logs:
-            artifact = log.get("IntegrationArtifact")
-            if artifact and artifact.get("Type") == "INTEGRATION_FLOW":
-                artifact_id = artifact.get("Id")
-                if artifact_id and artifact_id not in iflows_dict:
-                    iflows_dict[artifact_id] = {
-                        "Id": artifact_id,
-                        "Name": artifact.get("Name"),
-                        "PackageId": artifact.get("PackageId"),
-                        "PackageName": artifact.get("PackageName"),
-                        "Type": artifact.get("Type"),
-                    }
-        return list(iflows_dict.values())
+        # Build iflow_id -> package mapping from design-time
+        pkg_map = {}
+        packages = client.list_integration_packages(top=200)
+        if isinstance(packages, list):
+            for pkg in packages:
+                pkg_id = pkg.get("Id")
+                pkg_name = pkg.get("Name")
+                if not pkg_id:
+                    continue
+                try:
+                    arts = client._request(
+                        "GET",
+                        f"IntegrationPackages('{pkg_id}')/IntegrationDesigntimeArtifacts",
+                        params={"$top": 200},
+                    )
+                    if isinstance(arts, list):
+                        for a in arts:
+                            pkg_map[a.get("Id")] = {"PackageId": pkg_id, "PackageName": pkg_name}
+                except Exception:
+                    pass
+
+        # Get runtime status
+        runtime = client._request("GET", "IntegrationRuntimeArtifacts", params={"$top": 200})
+        if not isinstance(runtime, list):
+            runtime = [runtime]
+
+        iflows = []
+        for a in runtime:
+            if a.get("Type", "").upper() != "INTEGRATION_FLOW":
+                continue
+            iflow_id = a.get("Id")
+            pkg_info = pkg_map.get(iflow_id, {"PackageId": None, "PackageName": None})
+            iflows.append({
+                "Id": iflow_id,
+                "Name": a.get("Name"),
+                "PackageId": pkg_info["PackageId"],
+                "PackageName": pkg_info["PackageName"],
+                "Type": a.get("Type"),
+                "Status": a.get("Status"),
+                "Version": a.get("Version"),
+            })
+        return iflows
     except Exception as e:
         return {"error": str(e)}
 
@@ -77,7 +104,8 @@ def get_iflow_stats(iflow_id=None):
             "total_messages": len(logs),
             "by_status": defaultdict(int),
             "by_iflow": defaultdict(lambda: {"count": 0, "statuses": defaultdict(int)}),
-            "errors": []
+            "errors": [],
+            "messages": [],
         }
 
         for log in logs:
@@ -85,6 +113,8 @@ def get_iflow_stats(iflow_id=None):
             status = log.get("Status", "UNKNOWN")
             stats["by_status"][status] += 1
 
+            artifact_id = None
+            artifact_name = None
             if artifact:
                 artifact_id = artifact.get("Id")
                 artifact_name = artifact.get("Name")
@@ -93,14 +123,23 @@ def get_iflow_stats(iflow_id=None):
                     stats["by_iflow"][artifact_id]["statuses"][status] += 1
                     stats["by_iflow"][artifact_id]["name"] = artifact_name
 
-                if status in {"FAILED", "ERROR"}:
-                    error_info = log.get("ErrorInformation")
-                    if error_info:
-                        stats["errors"].append({
-                            "iflow": artifact_name or artifact_id,
-                            "status": status,
-                            "timestamp": log.get("LogStart")
-                        })
+            stats["messages"].append({
+                "MessageGuid": log.get("MessageGuid"),
+                "CorrelationId": log.get("CorrelationId"),
+                "Status": status,
+                "IFlowName": artifact_name or artifact_id,
+                "LogStart": log.get("LogStart"),
+                "DurationInMs": log.get("DurationInMs"),
+            })
+
+            if status in {"FAILED", "ERROR"}:
+                error_info = log.get("ErrorInformation")
+                if error_info:
+                    stats["errors"].append({
+                        "iflow": artifact_name or artifact_id,
+                        "status": status,
+                        "timestamp": log.get("LogStart")
+                    })
 
         if iflow_id:
             if iflow_id in stats["by_iflow"]:
