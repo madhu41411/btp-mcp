@@ -5,14 +5,15 @@ Provides REST endpoints for external access to MCP tools.
 
 import os
 import json
+from collections import defaultdict, OrderedDict
 from functools import wraps
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from datetime import datetime
 
 from btp_mcp.client import SapBtpClient
 from btp_mcp.config import get_settings
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='templates')
 
 # Initialize BTP client
 client = None
@@ -46,11 +47,181 @@ def require_api_key(f):
         return f(*args, **kwargs)
     return decorated_function
 
+
+def get_all_iflows():
+    """Get all active integration flows from runtime message logs."""
+    try:
+        logs = client.get_message_processing_logs(top=2000)
+        iflows_dict = OrderedDict()
+        for log in logs:
+            artifact = log.get("IntegrationArtifact")
+            if artifact and artifact.get("Type") == "INTEGRATION_FLOW":
+                artifact_id = artifact.get("Id")
+                if artifact_id and artifact_id not in iflows_dict:
+                    iflows_dict[artifact_id] = {
+                        "Id": artifact_id,
+                        "Name": artifact.get("Name"),
+                        "PackageId": artifact.get("PackageId"),
+                        "PackageName": artifact.get("PackageName"),
+                        "Type": artifact.get("Type"),
+                    }
+        return list(iflows_dict.values())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_iflow_stats(iflow_id=None):
+    """Get runtime statistics for active integration flows."""
+    try:
+        logs = client.get_message_processing_logs(top=2000)
+        stats = {
+            "total_messages": len(logs),
+            "by_status": defaultdict(int),
+            "by_iflow": defaultdict(lambda: {"count": 0, "statuses": defaultdict(int)}),
+            "errors": []
+        }
+
+        for log in logs:
+            artifact = log.get("IntegrationArtifact")
+            status = log.get("Status", "UNKNOWN")
+            stats["by_status"][status] += 1
+
+            if artifact:
+                artifact_id = artifact.get("Id")
+                artifact_name = artifact.get("Name")
+                if artifact_id:
+                    stats["by_iflow"][artifact_id]["count"] += 1
+                    stats["by_iflow"][artifact_id]["statuses"][status] += 1
+                    stats["by_iflow"][artifact_id]["name"] = artifact_name
+
+                if status in {"FAILED", "ERROR"}:
+                    error_info = log.get("ErrorInformation")
+                    if error_info:
+                        stats["errors"].append({
+                            "iflow": artifact_name or artifact_id,
+                            "status": status,
+                            "timestamp": log.get("LogStart")
+                        })
+
+        if iflow_id:
+            if iflow_id in stats["by_iflow"]:
+                return {"iflow": iflow_id, "stats": stats["by_iflow"][iflow_id]}
+            return {"error": f"iFlow {iflow_id} not found"}
+
+        return stats
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def process_query(user_query):
+    """Convert a user query into a response payload."""
+    query_lower = user_query.lower()
+    response = {"type": "text", "data": None}
+    try:
+        if any(keyword in query_lower for keyword in ["list", "show", "all", "iflows", "flows"]):
+            iflows = get_all_iflows()
+            if isinstance(iflows, dict) and "error" in iflows:
+                response["type"] = "error"
+                response["data"] = iflows
+                response["summary"] = f"Error: {iflows['error']}"
+            else:
+                response["type"] = "iflows_list"
+                response["data"] = iflows
+                response["summary"] = f"Found {len(iflows)} active iflows"
+        elif any(keyword in query_lower for keyword in ["statistics", "stats", "summary", "count", "how many"]):
+            stats = get_iflow_stats()
+            response["type"] = "statistics"
+            response["data"] = stats
+            response["summary"] = f"Total messages: {stats.get('total_messages', 0)}, Status breakdown: {dict(stats.get('by_status', {}))}"
+        elif any(keyword in query_lower for keyword in ["package", "packages"]):
+            iflows = get_all_iflows()
+            packages = defaultdict(list)
+            for iflow in iflows:
+                pkg_id = iflow.get("PackageId", "Unknown")
+                packages[pkg_id].append(iflow)
+            response["type"] = "packages"
+            response["data"] = dict(packages)
+            response["summary"] = f"Found {len(packages)} packages"
+        elif any(keyword in query_lower for keyword in ["deployment", "deploy", "status"]):
+            iflows = get_all_iflows()
+            response["type"] = "deployment"
+            response["data"] = iflows
+            response["summary"] = f"{len(iflows)} iflows deployed and active"
+        elif any(keyword in query_lower for keyword in ["error", "failed", "failure", "issues"]):
+            stats = get_iflow_stats()
+            errors = stats.get("errors", [])
+            failed_count = stats.get("by_status", {}).get("FAILED", 0) + stats.get("by_status", {}).get("ERROR", 0)
+            response["type"] = "errors"
+            response["data"] = {"failed_count": failed_count, "errors": errors, "by_status": dict(stats.get("by_status", {}))}
+            response["summary"] = f"Found {failed_count} failed/error messages"
+        elif "iflow" in query_lower or "flow" in query_lower:
+            iflows = get_all_iflows()
+            keywords = query_lower.split()
+            matching = [i for i in iflows if any(k in (i.get("Name", "") or "").lower() or k in (i.get("Id", "") or "").lower() for k in keywords)]
+            response["type"] = "iflows_list"
+            response["data"] = matching
+            response["summary"] = f"Found {len(matching)} matching iflows"
+        else:
+            response["type"] = "help"
+            response["data"] = {
+                "suggestions": [
+                    "List all iflows",
+                    "Show statistics",
+                    "List packages",
+                    "Check deployment status",
+                    "Show errors",
+                    "Search for specific iflow"
+                ]
+            }
+            response["summary"] = "I can help you with iflow information. Try asking about: iflows, statistics, packages, deployment status, or errors."
+
+        return response
+    except Exception as e:
+        return {"type": "error", "data": {"error": str(e)}, "summary": f"Error processing query: {str(e)}"}
+
+
+@app.route('/', methods=['GET'])
+def index():
+    """Serve the main UI page."""
+    return render_template('index.html')
+
+
+@app.route('/api/docs', methods=['GET'])
+def api_docs():
+    """Return API documentation for the deployed MCP service."""
+    return jsonify({
+        "service": "BTP Integration Suite MCP Server",
+        "version": "1.0",
+        "endpoints": {
+            "GET /health": "Health check (no auth required)",
+            "GET /api/ping": "Check BTP connectivity",
+            "GET /api/packages": "List integration packages",
+            "GET /api/artifacts": "List integration artifacts",
+            "GET /api/logs": "Get message processing logs",
+            "POST /api/chat": "Chat query endpoint for the UI"
+        },
+        "authentication": "Use X-API-Key header for API endpoints, UI is served securely from the same service."
+    }), 200
+
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """Handle chat messages from the web UI."""
+    try:
+        data = request.json
+        user_message = data.get('message', '').strip()
+        if not user_message:
+            return jsonify({"error": "Empty message"}), 400
+        result = process_query(user_message)
+        return jsonify({"user_message": user_message, "response": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
     try:
-        # Test BTP connection
         if client:
             client._get_token()
             status = "healthy"
@@ -124,23 +295,6 @@ def get_logs():
         return jsonify({"success": True, "data": logs, "count": len(logs)}), 200
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/', methods=['GET'])
-def index():
-    """API documentation"""
-    return jsonify({
-        "service": "BTP Integration Suite MCP Server",
-        "version": "1.0",
-        "endpoints": {
-            "GET /health": "Health check (no auth required)",
-            "GET /api/ping": "Check BTP connectivity",
-            "GET /api/packages": "List integration packages",
-            "GET /api/artifacts": "List integration artifacts",
-            "GET /api/logs": "Get message processing logs"
-        },
-        "authentication": "Use X-API-Key header for requests",
-        "documentation": "https://github.com/yourusername/btp-mcp"
-    }), 200
 
 @app.errorhandler(404)
 def not_found(error):
