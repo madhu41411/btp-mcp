@@ -117,7 +117,43 @@ def process_query(user_query):
     query_lower = user_query.lower()
     response = {"type": "text", "data": None}
     try:
-        if any(keyword in query_lower for keyword in ["list", "show", "all", "iflows", "flows"]):
+        if any(keyword in query_lower for keyword in ["error", "failed", "failure", "issues"]):
+            stats = get_iflow_stats()
+            errors = stats.get("errors", [])
+            failed_count = stats.get("by_status", {}).get("FAILED", 0) + stats.get("by_status", {}).get("ERROR", 0)
+            response["type"] = "errors"
+            response["data"] = {"failed_count": failed_count, "errors": errors, "by_status": dict(stats.get("by_status", {}))}
+            response["summary"] = f"Found {failed_count} failed/error messages"
+        elif any(keyword in query_lower for keyword in ["package", "packages"]):
+            iflows = get_all_iflows()
+            packages = defaultdict(list)
+            if isinstance(iflows, dict) and "error" in iflows:
+                response["type"] = "error"
+                response["data"] = iflows
+                response["summary"] = f"Error: {iflows['error']}"
+            else:
+                for iflow in iflows:
+                    pkg_id = iflow.get("PackageId", "Unknown")
+                    packages[pkg_id].append(iflow)
+                response["type"] = "packages"
+                response["data"] = dict(packages)
+                response["summary"] = f"Found {len(packages)} packages"
+        elif any(keyword in query_lower for keyword in ["statistics", "stats", "summary", "count", "how many"]):
+            stats = get_iflow_stats()
+            response["type"] = "statistics"
+            response["data"] = stats
+            response["summary"] = f"Total messages: {stats.get('total_messages', 0)}, Status breakdown: {dict(stats.get('by_status', {}))}"
+        elif any(keyword in query_lower for keyword in ["deployment", "deploy", "status"]):
+            iflows = get_all_iflows()
+            if isinstance(iflows, dict) and "error" in iflows:
+                response["type"] = "error"
+                response["data"] = iflows
+                response["summary"] = f"Error: {iflows['error']}"
+            else:
+                response["type"] = "deployment"
+                response["data"] = iflows
+                response["summary"] = f"{len(iflows)} iflows deployed and active"
+        elif any(keyword in query_lower for keyword in ["list", "show", "all", "iflows", "flows"]):
             iflows = get_all_iflows()
             if isinstance(iflows, dict) and "error" in iflows:
                 response["type"] = "error"
@@ -127,39 +163,18 @@ def process_query(user_query):
                 response["type"] = "iflows_list"
                 response["data"] = iflows
                 response["summary"] = f"Found {len(iflows)} active iflows"
-        elif any(keyword in query_lower for keyword in ["statistics", "stats", "summary", "count", "how many"]):
-            stats = get_iflow_stats()
-            response["type"] = "statistics"
-            response["data"] = stats
-            response["summary"] = f"Total messages: {stats.get('total_messages', 0)}, Status breakdown: {dict(stats.get('by_status', {}))}"
-        elif any(keyword in query_lower for keyword in ["package", "packages"]):
-            iflows = get_all_iflows()
-            packages = defaultdict(list)
-            for iflow in iflows:
-                pkg_id = iflow.get("PackageId", "Unknown")
-                packages[pkg_id].append(iflow)
-            response["type"] = "packages"
-            response["data"] = dict(packages)
-            response["summary"] = f"Found {len(packages)} packages"
-        elif any(keyword in query_lower for keyword in ["deployment", "deploy", "status"]):
-            iflows = get_all_iflows()
-            response["type"] = "deployment"
-            response["data"] = iflows
-            response["summary"] = f"{len(iflows)} iflows deployed and active"
-        elif any(keyword in query_lower for keyword in ["error", "failed", "failure", "issues"]):
-            stats = get_iflow_stats()
-            errors = stats.get("errors", [])
-            failed_count = stats.get("by_status", {}).get("FAILED", 0) + stats.get("by_status", {}).get("ERROR", 0)
-            response["type"] = "errors"
-            response["data"] = {"failed_count": failed_count, "errors": errors, "by_status": dict(stats.get("by_status", {}))}
-            response["summary"] = f"Found {failed_count} failed/error messages"
         elif "iflow" in query_lower or "flow" in query_lower:
             iflows = get_all_iflows()
-            keywords = query_lower.split()
-            matching = [i for i in iflows if any(k in (i.get("Name", "") or "").lower() or k in (i.get("Id", "") or "").lower() for k in keywords)]
-            response["type"] = "iflows_list"
-            response["data"] = matching
-            response["summary"] = f"Found {len(matching)} matching iflows"
+            if isinstance(iflows, dict) and "error" in iflows:
+                response["type"] = "error"
+                response["data"] = iflows
+                response["summary"] = f"Error: {iflows['error']}"
+            else:
+                keywords = query_lower.split()
+                matching = [i for i in iflows if any(k in (i.get("Name", "") or "").lower() or k in (i.get("Id", "") or "").lower() for k in keywords)]
+                response["type"] = "iflows_list"
+                response["data"] = matching
+                response["summary"] = f"Found {len(matching)} matching iflows"
         else:
             response["type"] = "help"
             response["data"] = {
@@ -197,6 +212,7 @@ def api_docs():
             "GET /api/packages": "List integration packages",
             "GET /api/artifacts": "List integration artifacts",
             "GET /api/logs": "Get message processing logs",
+            "GET /api/iflows": "List active iflows from runtime logs",
             "POST /api/chat": "Chat query endpoint for the UI"
         },
         "authentication": "Use X-API-Key header for API endpoints, UI is served securely from the same service."
@@ -292,6 +308,18 @@ def get_logs():
             skip=skip
         )
         return jsonify({"success": True, "data": logs, "count": len(logs)}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/iflows', methods=['GET'])
+@require_api_key
+def list_iflows_api():
+    """List active iflows from recent runtime logs."""
+    try:
+        iflows = get_all_iflows()
+        if isinstance(iflows, dict) and "error" in iflows:
+            return jsonify({"success": False, "error": iflows["error"]}), 500
+        return jsonify({"success": True, "data": iflows, "count": len(iflows)}), 200
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
