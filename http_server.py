@@ -213,6 +213,8 @@ def api_docs():
             "GET /api/artifacts": "List integration artifacts",
             "GET /api/logs": "Get message processing logs",
             "GET /api/iflows": "List active iflows from runtime logs",
+            "GET /api/stats": "Return runtime message processing statistics",
+            "GET /api/errors": "Return failed/error message details",
             "POST /api/chat": "Chat query endpoint for the UI"
         },
         "authentication": "Use X-API-Key header for API endpoints, UI is served securely from the same service."
@@ -320,6 +322,30 @@ def list_iflows_api():
         if isinstance(iflows, dict) and "error" in iflows:
             return jsonify({"success": False, "error": iflows["error"]}), 500
         return jsonify({"success": True, "data": iflows, "count": len(iflows)}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/stats', methods=['GET'])
+@require_api_key
+def stats_api():
+    """Return runtime message processing statistics."""
+    try:
+        iflow_id = request.args.get('iflow_id', None, type=str)
+        stats = get_iflow_stats(iflow_id=iflow_id if iflow_id else None)
+        if isinstance(stats, dict) and "error" in stats and iflow_id:
+            return jsonify({"success": False, "error": stats["error"]}), 404
+        return jsonify({"success": True, "data": stats}), 200
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/errors', methods=['GET'])
+@require_api_key
+def errors_api():
+    """Return failed/error message details."""
+    try:
+        stats = get_iflow_stats()
+        errors = stats.get("errors", []) if isinstance(stats, dict) else []
+        return jsonify({"success": True, "data": {"failed_count": stats.get("by_status", {}).get("FAILED", 0) + stats.get("by_status", {}).get("ERROR", 0), "errors": errors, "by_status": dict(stats.get("by_status", {}))}}), 200
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

@@ -58,8 +58,9 @@ http://localhost:8000/
 - `GET /api/ping` — BTP connectivity check
 - `GET /api/packages` — list integration packages
 - `GET /api/artifacts` — list artifacts
-- `GET /api/logs` — message processing logs
-- `POST /api/chat` — natural language query from UI
+- `GET /api/logs` — message processing logs- `GET /api/iflows` — list active iflows from runtime logs
+- `GET /api/stats` — return runtime message processing statistics
+- `GET /api/errors` — return failed/error message details- `POST /api/chat` — natural language query from UI
 
 ## Securing the API
 
