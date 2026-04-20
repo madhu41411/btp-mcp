@@ -237,6 +237,24 @@ BTP_TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "create_iflow",
+        "description": (
+            "Create a new minimal passthrough integration flow (iflow) in a SAP BTP package. "
+            "Call list_packages first to confirm the package_id. "
+            "After creation, call deploy_iflow with the returned Id to deploy it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Display name for the new iflow."},
+                "package_id": {"type": "string", "description": "The package Id to create the iflow in."},
+                "iflow_id": {"type": "string", "description": "Optional unique Id (auto-derived from name if omitted)."},
+                "description": {"type": "string", "description": "Optional description."},
+            },
+            "required": ["name", "package_id"],
+        },
+    },
+    {
         "name": "deploy_iflow",
         "description": (
             "Deploy a design-time integration flow to the SAP BTP runtime. "
@@ -334,6 +352,18 @@ def _execute_tool(tool_name: str, tool_input: dict) -> dict:
                 "by_status": dict(stats.get("by_status", {})),
             },
         }
+
+    if tool_name == "create_iflow":
+        try:
+            result = client.create_iflow(
+                name=tool_input["name"],
+                package_id=tool_input["package_id"],
+                iflow_id=tool_input.get("iflow_id"),
+                description=tool_input.get("description", ""),
+            )
+            return {"success": True, "iflow": result, "message": f"Created iflow '{result['Id']}' in package '{result['PackageId']}'."}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     if tool_name == "deploy_iflow":
         artifact_id = tool_input["artifact_id"]

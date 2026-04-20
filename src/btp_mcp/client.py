@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import io
+import re
 import time
+import zipfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from urllib.parse import quote
@@ -288,6 +292,84 @@ class SapBtpClient:
             return response.text.strip()
         raise ValueError(
             _build_http_error_message(response, base_url=self.base_url, resource_path=url)
+        )
+
+    def create_iflow(
+        self,
+        name: str,
+        package_id: str,
+        iflow_id: Optional[str] = None,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """Create a minimal passthrough iflow in the given package and return its metadata."""
+        if not iflow_id:
+            iflow_id = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+
+        iflw_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<bpmn2:definitions
+    xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL"
+    xmlns:ifl="http:///com.sap.ifl.model/Ifl.xsd"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    id="Definitions_1">
+  <bpmn2:collaboration id="Collaboration_1">
+    <bpmn2:participant id="Participant_1" ifl:type="IntegrationProcess"
+        name="Integration Process" processRef="Process_1"/>
+  </bpmn2:collaboration>
+  <bpmn2:process id="Process_1" name="Integration Process">
+    <bpmn2:startEvent id="StartEvent_1" name="Start">
+      <bpmn2:outgoing>SequenceFlow_1</bpmn2:outgoing>
+    </bpmn2:startEvent>
+    <bpmn2:endEvent id="EndEvent_1" name="End">
+      <bpmn2:incoming>SequenceFlow_1</bpmn2:incoming>
+    </bpmn2:endEvent>
+    <bpmn2:sequenceFlow id="SequenceFlow_1"
+        sourceRef="StartEvent_1" targetRef="EndEvent_1"/>
+  </bpmn2:process>
+</bpmn2:definitions>"""
+
+        manifest = (
+            "Manifest-Version: 1.0\n"
+            f"Bundle-SymbolicName: {iflow_id}\n"
+            f"Bundle-Name: {name}\n"
+            "Bundle-Version: 1.0.0\n"
+            "Bundle-ManifestVersion: 2\n"
+        )
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{iflow_id}/META-INF/MANIFEST.MF", manifest)
+            zf.writestr(
+                f"{iflow_id}/src/main/resources/scenarioflows/integrationflow/{iflow_id}.iflw",
+                iflw_xml,
+            )
+            zf.writestr(f"{iflow_id}/src/main/resources/parameters.prop", "")
+        buf.seek(0)
+        zip_b64 = base64.b64encode(buf.read()).decode("utf-8")
+
+        token = self._get_token()
+        url = f"{self.base_url}{self.api_path}/IntegrationDesigntimeArtifacts"
+        response = httpx.post(
+            url,
+            json={
+                "Name": name,
+                "Id": iflow_id,
+                "PackageId": package_id,
+                "Description": description,
+                "ArtifactContent": zip_b64,
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=self.settings.sap_btp_timeout_seconds,
+        )
+        if response.status_code in (200, 201):
+            return {"Id": iflow_id, "Name": name, "PackageId": package_id}
+        raise ValueError(
+            _build_http_error_message(
+                response, base_url=self.base_url, resource_path="IntegrationDesigntimeArtifacts"
+            )
         )
 
     def undeploy_artifact(self, artifact_id: str) -> bool:

@@ -63,6 +63,25 @@ def build_server() -> FastMCP:
         return iflows
 
     @mcp.tool()
+    def create_iflow(
+        name: str,
+        package_id: str,
+        iflow_id: str | None = None,
+        description: str = "",
+    ) -> dict:
+        """
+        Create a minimal passthrough integration flow in the given package.
+        Returns the new iflow's Id, Name, and PackageId.
+        Use list_integration_packages first to confirm the package_id exists.
+        """
+        return client.create_iflow(
+            name=name,
+            package_id=package_id,
+            iflow_id=iflow_id,
+            description=description,
+        )
+
+    @mcp.tool()
     def get_artifact_details(artifact_id: str, version: str = "active") -> dict:
         """Get a single artifact by id and version."""
         return client.get_artifact_details(artifact_id=artifact_id, version=version)
